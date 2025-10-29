@@ -1,0 +1,133 @@
+pip install yfinance pandas numpy matplotlib pytz
+pip install pandas yfinance finnhub-python openpyxl pytz
+
+# macOS / Linux
+export ALPHAVANTAGE_API_KEY=4X5C69IO8QQUSUT3
+# Windows PowerShell
+$env:ALPHAVANTAGE_API_KEY="4X5C69IO8QQUSUT3"
+
+# 带回退运行
+python us_stock_data_pipeline.py --tickers OKLO LEU --alpha_fallback
+
+python us_stock_data_to_csv.py --tickers OKLO LEU --days 3 --intraday_days 1
+
+# update strategy
+python merge_to_strategy_template.py --template 10-25-OKLO_LEU_Strategy_Template.xlsx --mode append
+python merge_to_strategy_template.py --template 10-25-OKLO_LEU_Strategy_Template.xlsx --mode append
+
+
+## 实时数据
+# macOS / Linux
+export FINNHUB_API_KEY=d3vfrchr01qt2ctpjbe0d3vfrchr01qt2ctpjbeg
+
+# Windows PowerShell
+$env:FINNHUB_API_KEY="d3vfrchr01qt2ctpjbe0d3vfrchr01qt2ctpjbeg"
+
+#命令行 1m 一分钟， 
+python us_stock_data_to_csv.py --ticker OKLO --live 1m
+
+#只要“昨日带指标”：
+python us_stock_data_pipeline.py --tickers OKLO LEU --days 60 --yesterday_only
+
+
+
+################ 读取实时数据，生成csv和json文件，可以设定时间段 ################
+--ticker/-t：股票代码，支持逗号分隔（如 OKLO,LEU）
+--interval/-i：周期（1m/2m/5m/15m/30m/60m/90m/1h/1d）
+--date/-d：目标日期（YYYY-MM-DD），自动取 美东 09:30–16:00
+--start/--end：自定义时间窗口（按 --tz 时区解析，默认 America/New_York）
+--tz：解析 --date/--start/--end 的时区（默认 America/New_York）
+--prepost：包含盘前/盘后数据
+--output-dir：输出目录（默认当前路径）
+--xlsx：导出为 Excel（默认 CSV）
+--rename-cols：将列名统一为小写并扁平化（便于后续脚本处理）
+--silent：减少控制台输出
+# once 表示只读取一次 | period_only 表示采集指定时间段后退出 | 如果没有参数，按分钟持续追加
+#######################################################################
+python us_stock_data_to_csv.py --tickers OKLO --csv ./data/csv/oklo_1100_1130.csv --json ./data/json/oklo_1100_1130.json --start-time 9:30 --end-time 10:00 --once --json-format array
+
+
+################# 生成可视的图片 ##########################
+# ticker 股票代码
+# json json文件
+# date 日期
+# period 时间段
+######################################################
+python oklo_json_visualize.py --json oklo.ndjson --ticker OKLO --date 2025-10-28 --period 11:00-11:30
+
+
+###### 判断5分钟强弱 #################################
+--input/-i：输入文件路径（必填）
+--format/-f：json | ndjson | csv（默认 json）
+--threshold/-t：突破阈值（如 144.5），用于“放量突破”判定（可选）
+--per5avg：覆盖每5分钟均量（如 280000），填了就不会用 avg_vol_5d/78（可选）
+--output/-o：输出文件路径（默认：同名 _scored.csv 或 _scored.xlsx）
+--xlsx：输出为 Excel（默认导出 CSV）
+
+#结果字段说明
+脚本会对每根 5 分钟K线打分，范围 0–10，并给出中文“强弱倾向”和阐述理由：
+score：综合评分（0–10）
+bias：强势/偏强/中性/偏弱/弱势
+vol_factor：相对每5分钟均量的倍数
+delta_vwap_pct：收盘相对VWAP的百分比
+candle_pattern：K线形态提示（如“长上影阴线”）
+reasons：中文解释串（可直接用于备注与复盘）
+####################################################
+
+# JSON 数组输入 → 输出 CSV
+python strength_score_cli.py --input ./data/json/oklo_1100_1130.json --format json --threshold 144.5
+# NDJSON 输入 → 输出 XLSX
+python strength_score_cli.py -i bars.ndjson -f ndjson -t 144.5 --xlsx
+# CSV 输入 + 覆盖每5分钟均量（不使用 avg_vol_5d 推导）
+python strength_score_cli.py -i bars.csv -f csv --per5avg 280000 -o scored.xlsx --xlsx
+
+
+
+################## 指定数据源的数据抓取 ########################
+--provider: yfinance | finnhub（默认 yfinance）
+--token: finnhub 的 API Key（provider=finnhub 时必填）
+--date: 指定日期（按 America/New_York 解析，窗口 09:30–16:00）
+--start/--end: 自定义时间窗（按 --tz 解析，默认 America/New_York）
+--prepost: yfinance 可包含盘前/盘后
+--output-dir: 输出目录，默认当前
+--xlsx: 输出为 Excel（默认 CSV）
+--rename-cols: 统一列名小写&扁平化
+--silent: 控制台静默
+################## 指定数据源的数据抓取 ########################
+
+# 1) yfinance：指定日期（美东 09:30–16:00）
+python us_stock_data_to_csv_v2.py -t OKLO -i 5m --date 2025-10-28 --provider yfinance
+
+# 2) finnhub：指定日期（需要 API Key）
+python us_stock_data_to_csv_v2.py -t OKLO -i 1m --date 2025-10-28 --provider finnhub --token YOUR_API_KEY
+
+# 3) 自定义起止时间（美东）
+python us_stock_data_to_csv_v2.py -t LEU -i 1m --start "2025-10-28 09:30" --end "2025-10-28 11:00" --provider finnhub --token YOUR_API_KEY
+
+# 4) 多标的导出为 Excel
+python us_stock_data_to_csv_v2.py -t OKLO,LEU -i 15m --date 2025-10-28 --provider yfinance --output-dir ./exports --xlsx
+
+
+
+############## 抓取数据v3 版本 ##############################
+参数同 v2版， 多一个参数 --json
+
+# 1) yfinance → CSV（默认）
+python us_stock_data_to_csv_v3.py -t OKLO -i 5m --date 2025-10-28 --provider yfinance
+# 2) finnhub → JSON（需要 API Key）
+python us_stock_data_to_csv_v3.py -t OKLO -i 1m --date 2025-10-28 --provider finnhub --token YOUR_API_KEY --json
+# 3) yfinance → Excel
+python us_stock_data_to_csv_v3.py -t LEU -i 15m --date 2025-10-28 --provider yfinance --xlsx
+
+python us_stock_data_to_csv_v3.py -t OKLO -i 1m --start "2025-10-28 09:30" --end "2025-10-28 9:35" --provider finnhub --token d3vfrchr01qt2ctpjbe0d3vfrchr01qt2ctpjbeg --json
+
+python us_stock_data_to_csv_v3_fix.py -t OKLO -i 1m --start "2025-10-28 09:30" --end "2025-10-28 09:35" --provider yfinance
+
+python us_stock_data_to_csv_v4.py -t OKLO -i 5m --date 2025-10-28 --provider yfinance
+python us_stock_data_to_csv_v4.py -t OKLO -i 5m   --start "2025-10-28 09:30" --end "2025-10-28 9:35" --provider yfinance --json
+
+
+## 采集数据
+python daily_summary_builder.py --inputs ./data/json/oklo_1100_1130.json --format json --ticker OKLO --tw-mins 10 --session "09:30-10:00" --avg-vol-5d 21971360 1844220 --output summaries_2025-10-28.json
+## 评定强弱
+python strength_score_cli.py --input ./data/json/oklo_1100_1130.json --format json --threshold 144.5

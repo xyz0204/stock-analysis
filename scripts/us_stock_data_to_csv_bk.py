@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-us_stock_data_to_csv.py  (JSON-enabled version, now with --date support)
-------------------------------------------------------------------------
+us_stock_data_to_csv.py  (JSON-enabled version)
+-----------------------------------------------
 Real-time-ish US stock monitor (yfinance, ~1m delayed).
-
-New in this version:
-- Support extracting a specific ET calendar date with --date YYYY-MM-DD
-  (works for 1-minute data available from yfinance, typically last 30 days).
 
 Adds JSON output options on top of CSV:
 - --json path/to/file.json
@@ -25,14 +21,11 @@ Other features unchanged:
 - Multi-ticker, CSV append, one-shot or loop
 
 Examples:
-  # Today, a 5-minute slice
   python us_stock_data_to_csv.py --tickers OKLO --json oklo.ndjson --json-format ndjson --period-only --start-time 09:35 --end-time 09:40
-
-  # Historical date (ET) 2025-10-28, slice 09:35-10:00
-  python us_stock_data_to_csv.py --tickers OKLO --date 2025-10-28 --start-time 09:35 --end-time 10:00 --json oklo_2025-10-28_pretty.json --json-format pretty --once
+  python us_stock_data_to_csv.py --tickers OKLO LEU --csv live.csv --json live.ndjson
 """
 import argparse, sys, time, json, os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 import numpy as np, pandas as pd, pytz
 
@@ -57,7 +50,8 @@ def rsi(series: pd.Series, period: int = 14) -> float:
     return float(rsi_series.iloc[-1])
 
 # ---------- Data fetch ----------
-def _tz_to_et(df: pd.DataFrame) -> pd.DataFrame:
+def get_intraday_today(ticker: str) -> pd.DataFrame:
+    df = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=False)
     if df.empty:
         return df
     if df.index.tz is None:
@@ -65,37 +59,6 @@ def _tz_to_et(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df = df.tz_convert(US_EASTERN)
     return df
-
-def get_intraday_for_date(ticker: str, date_et: Optional[str]) -> pd.DataFrame:
-    """
-    Return 1-minute intraday dataframe for a specific ET date.
-    If date_et is None or equals 'today' (in ET), fetch today's 1d/1m.
-    Else fetch [date 00:00, date+1 00:00) ET window.
-    """
-    if not date_et:
-        # today (ET)
-        df = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=False)
-        return _tz_to_et(df)
-
-    # Parse ET date string
-    try:
-        day = datetime.strptime(date_et, "%Y-%m-%d").date()
-    except ValueError:
-        raise ValueError("--date must be formatted as YYYY-MM-DD (ET)")
-
-    today_et = datetime.now(US_EASTERN).date()
-    if day == today_et:
-        df = yf.Ticker(ticker).history(period="1d", interval="1m", auto_adjust=False)
-        return _tz_to_et(df)
-
-    # yfinance limitation: 1m bars typically available for ~30 days.
-    # We'll request a tight start/end ET window and let yfinance handle timezone.
-    start_et = US_EASTERN.localize(datetime.combine(day, datetime.min.time()))  # 00:00
-    end_et = start_et + timedelta(days=1)
-
-    # Convert to naive UTC timestamps for yfinance if needed; yfinance accepts tz-aware too.
-    df = yf.Ticker(ticker).history(start=start_et, end=end_et, interval="1m", auto_adjust=False)
-    return _tz_to_et(df)
 
 def get_daily_history(ticker: str) -> pd.DataFrame:
     df = yf.Ticker(ticker).history(period="1mo", interval="1d", auto_adjust=False)
@@ -137,7 +100,7 @@ def compute_trailing_window_ohlcv(df_intraday: pd.DataFrame, trailing_min: int) 
     start_ts = end_ts - pd.Timedelta(minutes=trailing_min)
     window = df_intraday.loc[df_intraday.index >= start_ts]
     if window.empty:
-        return {k: float('nan') for k in ["start_ts","tw_open","tw_high","tw_low","tw_close","tw_volume"]}
+        return {k: float('nan') for k in ["tw_open","tw_high","tw_low","tw_close","tw_volume"]}
     tw_open = float(window["Open"].iloc[0])
     tw_high = float(window["High"].max())
     tw_low = float(window["Low"].min())
@@ -163,22 +126,12 @@ def compute_avg_vol_5d(df_daily: pd.DataFrame) -> float:
         return float(vols.mean()) if len(vols) > 0 else float('nan')
 
 # ---------- Period window ----------
-def get_period_data(df_intraday: pd.DataFrame, start_time: str, end_time: str, date_et: Optional[str]) -> pd.DataFrame:
-    """
-    Slice df_intraday between ET times on the provided date (or the df's date if None).
-    Assumes df_intraday is already filtered to the requested date.
-    """
+def get_period_data(df_intraday: pd.DataFrame, start_time: str, end_time: str) -> pd.DataFrame:
     if df_intraday.empty:
         return df_intraday
-
-    # Prefer explicit --date; otherwise infer date from df index
-    if date_et:
-        base_date = date_et
-    else:
-        base_date = df_intraday.index[-1].astimezone(US_EASTERN).strftime("%Y-%m-%d")
-
-    start_ts = pd.Timestamp(f"{base_date} {start_time}", tz=US_EASTERN)
-    end_ts = pd.Timestamp(f"{base_date} {end_time}", tz=US_EASTERN)
+    today = df_intraday.index[-1].astimezone(US_EASTERN).strftime("%Y-%m-%d")
+    start_ts = pd.Timestamp(f"{today} {start_time}", tz=US_EASTERN)
+    end_ts = pd.Timestamp(f"{today} {end_time}", tz=US_EASTERN)
     if end_ts < start_ts:
         start_ts, end_ts = end_ts, start_ts
     sub = df_intraday.loc[(df_intraday.index >= start_ts) & (df_intraday.index <= end_ts)]
@@ -262,12 +215,10 @@ def ensure_columns_order(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
 def build_row(ticker: str,
               trailing_min: int,
               start_time: Optional[str] = None,
-              end_time: Optional[str] = None,
-              date_et: Optional[str] = None) -> Dict[str, float]:
-    df_intraday = get_intraday_for_date(ticker, date_et)
+              end_time: Optional[str] = None) -> Dict[str, float]:
+    df_intraday = get_intraday_today(ticker)
     df_daily = get_daily_history(ticker)
 
-    # timestamp to print: if df_intraday has rows, use its last index; else now ET
     if not df_intraday.empty:
         last_price = float(df_intraday["Close"].iloc[-1])
         last_ts = df_intraday.index[-1]
@@ -297,12 +248,11 @@ def build_row(ticker: str,
     }
 
     if start_time and end_time:
-        df_period = get_period_data(df_intraday, start_time, end_time, date_et)
+        df_period = get_period_data(df_intraday, start_time, end_time)
         period = compute_period_metrics(df_period)
         row.update(period)
         row["period_start_et"] = start_time
         row["period_end_et"] = end_time
-        row["period_date_et"] = (date_et or (df_intraday.index[-1].astimezone(US_EASTERN).strftime("%Y-%m-%d") if not df_intraday.empty else ""))
 
         extras = compute_period_extras(
             df_period,
@@ -329,7 +279,6 @@ def build_row(ticker: str,
             "period_minutes": float('nan'),
             "period_start_et": "",
             "period_end_et": "",
-            "period_date_et": "",
             "period_vwap": float('nan'),
             "period_range_pct": float('nan'),
             "period_vol_ratio": float('nan'),
@@ -387,7 +336,7 @@ def append_rows_json(json_path: Optional[str], rows: List[Dict[str, float]], jso
 
 # ---------- CLI ----------
 def parse_args():
-    p = argparse.ArgumentParser(description="US stock live/historical monitor to CSV/JSON with optional ET period extraction.")
+    p = argparse.ArgumentParser(description="US stock live monitor to CSV/JSON with optional ET period extraction.")
     p.add_argument("--tickers", nargs="+", required=True, help="One or more ticker symbols, e.g., OKLO LEU SMR AAPL")
     p.add_argument("--csv", default=None, help="Output CSV path (optional)")
     p.add_argument("--json", default=None, help="Output JSON file path (optional)")
@@ -398,7 +347,6 @@ def parse_args():
     p.add_argument("--start-time", type=str, help="ET start time for period extraction, e.g., 09:35")
     p.add_argument("--end-time", type=str, help="ET end time for period extraction, e.g., 09:40")
     p.add_argument("--period-only", action="store_true", help="Only compute the provided period metrics and exit")
-    p.add_argument("--date", type=str, default=None, help="ET calendar date (YYYY-MM-DD) to pull 1-minute data for; default: today")
     return p.parse_args()
 
 # ---------- Main ----------
@@ -411,7 +359,7 @@ def main():
         "tw_open","tw_high","tw_low","tw_close","tw_volume",
         "avg_vol_5d",
         "period_open","period_high","period_low","period_close","period_volume","period_rsi14","period_minutes",
-        "period_start_et","period_end_et","period_date_et",
+        "period_start_et","period_end_et",
         "period_vwap","period_range_pct","period_vol_ratio","period_body_pct",
     ]
     # Only create CSV header when CSV is requested
@@ -422,7 +370,7 @@ def main():
         rows: List[Dict[str, float]] = []
         for t in args.tickers:
             try:
-                row = build_row(t, args.trailing_min, args.start_time, args.end_time, args.date)
+                row = build_row(t, args.trailing_min, args.start_time, args.end_time)
             except Exception as e:
                 row = {
                     "timestamp": datetime.now(US_EASTERN).strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -450,7 +398,6 @@ def main():
                     "period_minutes": float('nan'),
                     "period_start_et": args.start_time or "",
                     "period_end_et": args.end_time or "",
-                    "period_date_et": args.date or "",
                     "period_vwap": float('nan'),
                     "period_range_pct": float('nan'),
                     "period_vol_ratio": float('nan'),
@@ -475,7 +422,7 @@ def main():
                     f"{r['tw_open']}/{r['tw_high']}/{r['tw_low']}/{r['tw_close']}  Vol Ses={r['session_volume']} "
                     f"TW={r['tw_volume']} Avg5dVol={r['avg_vol_5d']}")
             if args.start_time and args.end_time:
-                base += (f"  |  PERIOD[{r.get('period_date_et','') or 'ET-Today'} {r['period_start_et']}-{r['period_end_et']}] "
+                base += (f"  |  PERIOD[{r['period_start_et']}-{r['period_end_et']}] "
                          f"O/H/L/C={r['period_open']}/{r['period_high']}/{r['period_low']}/{r['period_close']} "
                          f"Vol={r['period_volume']} RSI={r['period_rsi14']} nmin={r['period_minutes']} "
                          f"VWAP={r['period_vwap']} Range%={r['period_range_pct']} "

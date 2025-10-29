@@ -1,0 +1,26 @@
+################## 抓取指定时间段内的数据 yfinance ######################
+
+### Sample
+
+### 抓“今天（ET）09:35–10:00”的切片（行为与之前一致）
+python us_stock_data_to_csv.py --tickers OKLO --start-time 09:35 --end-time 10:00 --period-only
+
+### 抓“历史某日（ET）2025-10-28 的 09:35–10:00”并输出为漂亮 JSON
+python us_stock_data_to_csv.py --tickers OKLO --date 2025-10-28 --start-time 09:35 --end-time 10:00 --json oklo_2025-10-28_pretty.json --json-format pretty --once
+
+
+### 多只股票、CSV 追加
+python us_stock_data_to_csv.py --tickers OKLO LEU SMR --date 2025-10-28 --start-time 09:30 --end-time 10:00 --csv data/live_2025-10-28.csv --once
+###############################################################
+
+
+################## 时间段内K线强弱评估 ######################
+### 从 JSON 评估并导出带图表 Excel
+python strength_score_cli_v2.py -i oklo_2025-10-28_pretty.json -f json -t 144.5 --xlsx
+python strength_score_cli_v3.py -i oklo_0940.json oklo_0945.json oklo_0950.json -f json --xlsx
+
+### 从 NDJSON，趋势窗口改为 4
+python strength_score_cli_v2.py -i data.ndjson -f ndjson --trend-window 4 --xlsx
+
+### 从 CSV，覆盖每5分钟均量
+python strength_score_cli_v2.py -i bars.csv -f csv --per5avg 280000 -o scored.xlsx --xlsx
